@@ -60,7 +60,7 @@ API_HASH = "335d8883ab3c4b1c8fd7662ea5219bfc"
 # StringSession() пустой, создаётся на лету при каждом запуске.
 
 ADMIN_IDS = [1592503829, 7831720836]
-DEFAULT_CHAT_ID = -1002781123506
+DEFAULT_CHAT_ID = -5379233619
 EVENT_DURATION = 180
 DEFAULT_INTERVAL = 86400
 DB_PATH = "perebiv.sqlite3"
