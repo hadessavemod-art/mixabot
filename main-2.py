@@ -1,4 +1,4 @@
-ё#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Telegram bot "ПЕРЕБИВ" на Telethon (для Bothost).
@@ -6,6 +6,19 @@ Telegram bot "ПЕРЕБИВ" на Telethon (для Bothost).
 Умеет менять цену платных сообщений в группе автоматически.
 Управление только кнопками. Один активный чат.
 """
+import subprocess
+import sys
+
+# Автоустановка Telethon, если его нет
+try:
+    import telethon  # noqa
+except ImportError:
+    print("[startup] telethon не найден, устанавливаю...", flush=True)
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--no-cache-dir", "telethon"]
+    )
+    print("[startup] telethon установлен", flush=True)
+
 import asyncio
 import html
 import logging
@@ -48,7 +61,7 @@ SESSION_STRING = (
 )
 
 ADMIN_IDS = [1592503829, 7831720836]
-DEFAULT_CHAT_ID = -5379233619
+DEFAULT_CHAT_ID = -1002781123506
 EVENT_DURATION = 180
 DEFAULT_INTERVAL = 86400
 DB_PATH = "perebiv.sqlite3"
@@ -635,16 +648,20 @@ class PerebivBot:
         await self.db.set_bot_state("active_chat_id", str(chat_id))
         await self.db.ensure_settings(chat_id)
 
+    # ---------- ЦЕНА ПЛАТНЫХ СООБЩЕНИЙ ----------
     async def set_paid_price(self, chat_id: int, stars: int) -> bool:
         if UpdatePaidMessagesPriceRequest is None:
             logger.error("UpdatePaidMessagesPriceRequest недоступен. Обновите telethon.")
             return False
         try:
             entity = await self.client.get_input_entity(chat_id)
-            try:
-                await self.client(UpdatePaidMessagesPriceRequest(channel=entity, stars_amount=stars))
-            except TypeError:
-                await self.client(UpdatePaidMessagesPriceRequest(channel=entity, stars=stars))
+            await self.client(
+                UpdatePaidMessagesPriceRequest(
+                    channel=entity,
+                    send_paid_messages_stars=stars,
+                    broadcast_messages_allowed=True,
+                )
+            )
             logger.info("Paid price for chat %s set to %s stars", chat_id, stars)
             return True
         except ChatAdminRequiredError:
