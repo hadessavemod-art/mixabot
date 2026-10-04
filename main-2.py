@@ -37,7 +37,7 @@ from telethon.errors import (
     MessageNotModifiedError,
     MessageIdInvalidError,
 )
-from telethon.tl.types import Channel, Chat
+from telethon.tl.types import Channel, Chat, PeerChannel
 
 try:
     from telethon.tl.functions.channels import UpdatePaidMessagesPriceRequest
@@ -61,7 +61,7 @@ SESSION_STRING = (
 )
 
 ADMIN_IDS = [1592503829, 7831720836]
-DEFAULT_CHAT_ID = -5379233619
+DEFAULT_CHAT_ID = -1002781123506
 EVENT_DURATION = 180
 DEFAULT_INTERVAL = 86400
 DB_PATH = "perebiv.sqlite3"
@@ -604,6 +604,7 @@ class PerebivBot:
         self.awaiting_input: dict[int, str] = {}
         self._active_chat_id: Optional[int] = None
         self._bot_id: Optional[int] = None
+        self._entity_cache: dict[int, object] = {}
 
     def register_handlers(self) -> None:
         self.client.add_event_handler(
@@ -648,16 +649,70 @@ class PerebivBot:
         await self.db.set_bot_state("active_chat_id", str(chat_id))
         await self.db.ensure_settings(chat_id)
 
+    async def _resolve_input_entity(self, chat_id: int):
+        """Возвращает InputChannel для чата, заполняя кэш при необходимости."""
+        if chat_id in self._entity_cache:
+            return self._entity_cache[chat_id]
+
+        entity = None
+
+        # 1) Пробуем напрямую
+        try:
+            entity = await self.client.get_entity(chat_id)
+        except Exception:
+            entity = None
+
+        # 2) Если не нашли — прогреваем диалоги и пробуем снова
+        if entity is None:
+            try:
+                await self.client.get_dialogs(limit=None)
+            except Exception:
+                logger.exception("get_dialogs failed")
+            try:
+                entity = await self.client.get_entity(chat_id)
+            except Exception:
+                entity = None
+
+        # 3) Если всё ещё не нашли — пробуем через PeerChannel с положительным ID
+        if entity is None:
+            try:
+                # -1002781123506 → 2781123506
+                positive_id = abs(chat_id) - 1000000000000
+                if positive_id > 0:
+                    entity = await self.client.get_entity(PeerChannel(positive_id))
+            except Exception:
+                entity = None
+
+        if entity is None:
+            return None
+
+        try:
+            input_entity = await self.client.get_input_entity(entity)
+        except Exception:
+            logger.exception("get_input_entity failed for %s", chat_id)
+            return None
+
+        self._entity_cache[chat_id] = input_entity
+        return input_entity
+
     # ---------- ЦЕНА ПЛАТНЫХ СООБЩЕНИЙ ----------
     async def set_paid_price(self, chat_id: int, stars: int) -> bool:
         if UpdatePaidMessagesPriceRequest is None:
             logger.error("UpdatePaidMessagesPriceRequest недоступен. Обновите telethon.")
             return False
         try:
-            entity = await self.client.get_input_entity(chat_id)
+            input_entity = await self._resolve_input_entity(chat_id)
+            if input_entity is None:
+                logger.error(
+                    "Не удалось получить сущность канала %s. "
+                    "Отключите Privacy Mode у бота и напишите /start в группе.",
+                    chat_id,
+                )
+                return False
+
             await self.client(
                 UpdatePaidMessagesPriceRequest(
-                    channel=entity,
+                    channel=input_entity,
                     send_paid_messages_stars=stars,
                     broadcast_messages_allowed=True,
                 )
@@ -759,6 +814,11 @@ class PerebivBot:
 
     async def initialize(self) -> None:
         await self.db.initialize()
+        # Прогреваем диалоги — это заполняет кэш сущностей
+        try:
+            await self.client.get_dialogs(limit=None)
+        except Exception:
+            logger.exception("Не удалось прогреть диалоги")
         active = await self.get_active_chat_id()
         await self.db.ensure_settings(active)
         try:
@@ -930,6 +990,11 @@ class PerebivBot:
             try:
                 title = getattr(chat, "title", None)
                 await self.db.register_chat(chat_id, title)
+                # Кэшируем input-entity, раз уж получили
+                try:
+                    self._entity_cache[chat_id] = await self.client.get_input_entity(chat)
+                except Exception:
+                    pass
             except Exception:
                 logger.exception("register_chat failed")
 
@@ -1105,6 +1170,10 @@ class PerebivBot:
         if not event.is_private and isinstance(chat, (Channel, Chat)):
             try:
                 await self.db.register_chat(chat.id, getattr(chat, "title", None))
+                try:
+                    self._entity_cache[chat.id] = await self.client.get_input_entity(chat)
+                except Exception:
+                    pass
             except Exception:
                 logger.exception("register_chat failed")
         self.awaiting_input.pop(user_id, None)
