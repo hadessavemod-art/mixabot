@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram bot "ПЕРЕБИВ" на Telethon (для Bothost).
-Сессия и настройки зашиты в код.
+Авторизация по BOT_TOKEN. Никаких session-строк.
 Умеет менять цену платных сообщений в группе автоматически.
 Управление только кнопками. Один активный чат.
 """
@@ -56,9 +56,8 @@ BOT_TOKEN = "8865782064:AAF_QRh0UpmS80C-u7bUcRi3IOM8jWB6zmk"
 API_ID = 34714558
 API_HASH = "335d8883ab3c4b1c8fd7662ea5219bfc"
 
-SESSION_STRING = (
-    "1AZWarzUBu4fIEQuqJFgFSEqpeO5O6WWm2_i7eOdZLUTRHbDF4R6SbyRdLHI5H2DbTr4q-jtPpQH0Z6TSqMtJw8Y3YlXvKKVmRIZFRUjv4hzZVSlI3C5oZq7kw8bXABa99aiIWo5kQ7dRo8tJC4f9jtgofJuK72x0r0Pxl_GIse_WmLETDKpaRdA3EhkEpuYDfsC6OWT0Hg_2i23vM5etvsQUHeeaJ10Ad4wowYKFgbw7IP35b_6WRQ_UAmcbz4czjn15xquCXqVtcDaOSipKmxoVQlKKOUz6_WFDgG35-yAGhC4YhgpV9HRD_u66mYOGijXVptL4KsKXrM9jEN9HjWHWx5ReSos="
-)
+# Сессия НЕ нужна — авторизуемся по bot_token.
+# StringSession() пустой, создаётся на лету при каждом запуске.
 
 ADMIN_IDS = [1592503829, 7831720836]
 DEFAULT_CHAT_ID = -1002781123506
@@ -597,7 +596,10 @@ class EventState:
 class PerebivBot:
     def __init__(self):
         self.db = Database(DB_PATH)
-        self.client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+        # ВАЖНО: пустая StringSession. Авторизация — по bot_token.
+        # Каждый запуск создаёт свежий auth key, поэтому конфликт
+        # AuthKeyDuplicatedError между контейнерами исключён.
+        self.client = TelegramClient(StringSession(), API_ID, API_HASH)
         self.states: dict[int, EventState] = {}
         self.global_lock = asyncio.Lock()
         self.scheduler_task: Optional[asyncio.Task] = None
@@ -650,19 +652,15 @@ class PerebivBot:
         await self.db.ensure_settings(chat_id)
 
     async def _resolve_input_entity(self, chat_id: int):
-        """Возвращает InputChannel для чата, заполняя кэш при необходимости."""
         if chat_id in self._entity_cache:
             return self._entity_cache[chat_id]
 
         entity = None
-
-        # 1) Пробуем напрямую
         try:
             entity = await self.client.get_entity(chat_id)
         except Exception:
             entity = None
 
-        # 2) Если не нашли — прогреваем диалоги и пробуем снова
         if entity is None:
             try:
                 await self.client.get_dialogs(limit=None)
@@ -673,10 +671,8 @@ class PerebivBot:
             except Exception:
                 entity = None
 
-        # 3) Если всё ещё не нашли — пробуем через PeerChannel с положительным ID
         if entity is None:
             try:
-                # -1002781123506 → 2781123506
                 positive_id = abs(chat_id) - 1000000000000
                 if positive_id > 0:
                     entity = await self.client.get_entity(PeerChannel(positive_id))
@@ -695,7 +691,6 @@ class PerebivBot:
         self._entity_cache[chat_id] = input_entity
         return input_entity
 
-    # ---------- ЦЕНА ПЛАТНЫХ СООБЩЕНИЙ ----------
     async def set_paid_price(self, chat_id: int, stars: int) -> bool:
         if UpdatePaidMessagesPriceRequest is None:
             logger.error("UpdatePaidMessagesPriceRequest недоступен. Обновите telethon.")
@@ -814,7 +809,6 @@ class PerebivBot:
 
     async def initialize(self) -> None:
         await self.db.initialize()
-        # Прогреваем диалоги — это заполняет кэш сущностей
         try:
             await self.client.get_dialogs(limit=None)
         except Exception:
@@ -990,7 +984,6 @@ class PerebivBot:
             try:
                 title = getattr(chat, "title", None)
                 await self.db.register_chat(chat_id, title)
-                # Кэшируем input-entity, раз уж получили
                 try:
                     self._entity_cache[chat_id] = await self.client.get_input_entity(chat)
                 except Exception:
@@ -1702,7 +1695,10 @@ class PerebivBot:
         await self._edit(event, "\n".join(lines), rows)
 
     async def run(self) -> None:
-        await self.client.start()
+        # АВТОРИЗАЦИЯ ПО ТОКЕНУ БОТА — никаких session-строк.
+        # Каждый запуск создаёт свежий MTProto auth key,
+        # поэтому конфликт между контейнерами невозможен.
+        await self.client.start(bot_token=BOT_TOKEN)
         me = await self.client.get_me()
         self._bot_id = me.id
         logger.info("Bot started as @%s (id=%s)", me.username, me.id)
@@ -1718,8 +1714,6 @@ class PerebivBot:
 # MAIN
 # ============================================================
 def main() -> None:
-    if not SESSION_STRING:
-        raise RuntimeError("SESSION_STRING пустой. Вставьте строку сессии в код.")
     bot = PerebivBot()
     try:
         asyncio.run(bot.run())
